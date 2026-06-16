@@ -29,6 +29,15 @@ sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 sio_app = socketio.ASGIApp(sio, socketio_path="")
 app.mount("/ws", sio_app)
 
+# Load environment variables from .env file if it exists
+if os.path.exists(".env"):
+    with open(".env") as f:
+        for line in f:
+            if line.strip() and not line.strip().startswith("#"):
+                parts = line.strip().split("=", 1)
+                if len(parts) == 2:
+                    os.environ[parts[0].strip()] = parts[1].strip()
+
 # Fast2SMS API Key from Environment
 FAST2SMS_API_KEY = os.getenv("FAST2SMS_API_KEY", "YOUR_FAST2SMS_API_KEY")
 
