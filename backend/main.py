@@ -4,8 +4,10 @@ import os
 import re
 from typing import Dict, List, Optional, Any
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse, RedirectResponse
 import socketio
 import httpx
 
@@ -28,6 +30,9 @@ app.add_middleware(
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 sio_app = socketio.ASGIApp(sio, socketio_path="")
 app.mount("/ws", sio_app)
+
+# Initialize Jinja2 templates
+templates = Jinja2Templates(directory="templates")
 
 # Load environment variables from .env file if it exists
 if os.path.exists(".env"):
@@ -288,6 +293,108 @@ def health_check():
 @app.get("/api/queue")
 def get_queue():
     return get_queue_update_payload()
+
+# --- Jinja2 Lite HTML Routes for Feature Phones & KaiOS ---
+
+@app.get("/lite/receptionist", response_class=HTMLResponse)
+async def lite_receptionist(request: Request):
+    payload = get_queue_update_payload()
+    return templates.TemplateResponse(
+        "receptionist.html",
+        {
+            "request": request,
+            "state": state,
+            "queue_payload": payload["queue"]
+        }
+    )
+
+@app.post("/lite/add")
+async def lite_add(request: Request, name: str = Form(...), phone: Optional[str] = Form(None)):
+    name = name.strip()
+    if name:
+        token_id = state["next_token_counter"]
+        state["next_token_counter"] += 1
+        joined_at = datetime.now().strftime("%I:%M %p")
+        
+        phone_val = phone.strip() if phone else None
+        
+        new_patient = {
+            "token_id": token_id,
+            "patient_name": name,
+            "phone": phone_val,
+            "joined_at": joined_at
+        }
+        state["queue"].append(new_patient)
+        
+        await broadcast_queue_update()
+        
+        if phone_val:
+            await send_sms(phone_val, f"Token {token_id} added for {name}")
+            
+    return RedirectResponse(url="/lite/receptionist", status_code=303)
+
+@app.post("/lite/next")
+async def lite_next(request: Request):
+    await on_call_next()
+    return RedirectResponse(url="/lite/receptionist", status_code=303)
+
+@app.get("/lite/patient", response_class=HTMLResponse)
+async def lite_patient(request: Request, token: Optional[int] = None):
+    last_updated = datetime.now().strftime("%I:%M %p")
+    if token is None:
+        return templates.TemplateResponse(
+            "patient.html",
+            {
+                "request": request,
+                "status": "error",
+                "token": None,
+                "last_updated": last_updated
+            }
+        )
+        
+    current_token = state["current_token"]
+    current_patient_name = state["current_patient_name"]
+    
+    # 1. Check if token is currently being seen
+    if current_token == token:
+        status = "current"
+        tokens_ahead = 0
+        est_wait_mins = 0
+    else:
+        # 2. Check if token is in the waiting queue
+        found_idx = -1
+        for idx, item in enumerate(state["queue"]):
+            if item["token_id"] == token:
+                found_idx = idx
+                break
+                
+        if found_idx != -1:
+            status = "waiting"
+            tokens_ahead = found_idx + 1
+            avg_time = get_avg_time()
+            est_wait_mins = round(tokens_ahead * avg_time, 1)
+        else:
+            # 3. Check if token is completed (already processed)
+            if current_token is not None and token < current_token:
+                status = "completed"
+            else:
+                status = "not_found"
+            tokens_ahead = 0
+            est_wait_mins = 0
+            
+    return templates.TemplateResponse(
+        "patient.html",
+        {
+            "request": request,
+            "status": status,
+            "token": token,
+            "tokens_ahead": tokens_ahead,
+            "est_wait_mins": est_wait_mins,
+            "current_token": current_token,
+            "current_patient_name": current_patient_name,
+            "last_updated": last_updated
+        }
+    )
 
 @app.post("/sms/receive")
 async def receive_sms_webhook(request: Request):
