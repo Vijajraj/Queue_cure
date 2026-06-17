@@ -97,6 +97,9 @@ export default function App() {
   const [avgTimeInput, setAvgTimeInput] = useState("10");
   const [isDebouncing, setIsDebouncing] = useState(false);
   
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [alertDialog, setAlertDialog] = useState(null);
+
   // Patient Screen state
   const [patientToken, setPatientToken] = useState("");
 
@@ -157,7 +160,10 @@ export default function App() {
     });
 
     socketInstance.on("queue_empty", () => {
-      alert(tRef.current.queue_empty_alert);
+      setAlertDialog({
+        title: tRef.current.alert_title || "Notice",
+        message: tRef.current.queue_empty_alert
+      });
     });
 
     socketInstance.on("patient_called", (data) => {
@@ -208,9 +214,15 @@ export default function App() {
       .replace("{token_id}", tokenId)
       .replace("{name}", patientName);
 
-    if (window.confirm(confirmationMsg)) {
-      socket.emit("skip_token", { token_id: tokenId });
-    }
+    setConfirmDialog({
+      title: t.alert_title || "Notice",
+      message: confirmationMsg,
+      confirmText: t.skip || "Skip",
+      confirmType: "warning",
+      onConfirm: () => {
+        socket.emit("skip_token", { token_id: tokenId });
+      }
+    });
   };
 
   // Set Average Consultation Time
@@ -225,9 +237,15 @@ export default function App() {
 
   // Reset Queue
   const handleReset = () => {
-    if (window.confirm(t.confirm_reset)) {
-      socket.emit("reset_queue");
-    }
+    setConfirmDialog({
+      title: t.alert_title || "Notice",
+      message: t.confirm_reset,
+      confirmText: t.reset_btn || "Reset",
+      confirmType: "danger",
+      onConfirm: () => {
+        socket.emit("reset_queue");
+      }
+    });
   };
 
   const hasPatients = queueState.queue.length > 0;
@@ -566,7 +584,10 @@ export default function App() {
                     <button
                       onClick={() => {
                         navigator.clipboard.writeText(liteUrl);
-                        alert("Copied to clipboard!");
+                        setAlertDialog({
+                          title: t.alert_title || "Notice",
+                          message: "Link copied to clipboard!"
+                        });
                       }}
                       className="p-1 hover:bg-gray-200 rounded-md transition-colors cursor-pointer text-gray-500"
                     >
@@ -578,6 +599,63 @@ export default function App() {
             )}
           </div>
         </main>
+      )}
+
+      {/* Custom Confirm Modal */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs transition-opacity duration-300">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full border border-gray-100 shadow-xl scale-in transition-all">
+            <h3 className="text-lg font-extrabold text-gray-900 mt-0 mb-2">
+              {confirmDialog.title}
+            </h3>
+            <p className="text-gray-600 text-sm mb-6 leading-relaxed">
+              {confirmDialog.message}
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setConfirmDialog(null)}
+                className="px-4 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold rounded-xl text-sm transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  confirmDialog.onConfirm();
+                  setConfirmDialog(null);
+                }}
+                className={`px-4 py-2 text-white font-bold rounded-xl text-sm transition-colors cursor-pointer ${
+                  confirmDialog.confirmType === "danger"
+                    ? "bg-red-600 hover:bg-red-700"
+                    : "bg-amber-600 hover:bg-amber-700"
+                }`}
+              >
+                {confirmDialog.confirmText}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Alert Modal */}
+      {alertDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs transition-opacity duration-300">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full border border-gray-100 shadow-xl scale-in transition-all">
+            <h3 className="text-lg font-extrabold text-gray-900 mt-0 mb-2">
+              {alertDialog.title}
+            </h3>
+            <p className="text-gray-600 text-sm mb-6 leading-relaxed">
+              {alertDialog.message}
+            </p>
+            <div className="flex justify-end">
+              <button
+                onClick={() => setAlertDialog(null)}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-sm transition-colors cursor-pointer"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
