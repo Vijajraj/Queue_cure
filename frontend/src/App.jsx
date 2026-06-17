@@ -102,6 +102,8 @@ export default function App() {
 
   const nameInputRef = useRef(null);
   const t = translations[lang];
+  const tRef = useRef(t);
+  tRef.current = t;
 
   // Route/Role detection on mount
   useEffect(() => {
@@ -155,7 +157,7 @@ export default function App() {
     });
 
     socketInstance.on("queue_empty", () => {
-      alert(t.queue_empty_alert);
+      alert(tRef.current.queue_empty_alert);
     });
 
     socketInstance.on("patient_called", (data) => {
@@ -168,7 +170,7 @@ export default function App() {
     return () => {
       socketInstance.disconnect();
     };
-  }, [lang]);
+  }, []);
 
   // Debounced Call Next
   const handleCallNext = () => {

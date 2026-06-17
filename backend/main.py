@@ -1,3 +1,4 @@
+import asyncio
 from collections import deque
 from datetime import datetime
 import os
@@ -10,6 +11,12 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, RedirectResponse
 import socketio
 import httpx
+
+# Shared HTTP client for outgoing SMS requests (reuses connections)
+http_client = httpx.AsyncClient(timeout=10.0)
+
+# Lock to prevent concurrent execution of call_next / race conditions
+_call_next_lock = asyncio.Lock()
 
 app = FastAPI(
     title="Queue Cure Backend",
@@ -118,9 +125,8 @@ async def send_sms(phone: str, message: str):
     }
     
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, data=payload, headers=headers)
-            print(f"[SMS OUT] Fast2SMS Response: {response.status_code} - {response.text}")
+        response = await http_client.post(url, data=payload, headers=headers)
+        print(f"[SMS OUT] Fast2SMS Response: {response.status_code} - {response.text}")
     except Exception as e:
         print(f"[SMS OUT] Error sending SMS: {e}")
 
@@ -144,7 +150,12 @@ async def on_call_next() -> str:
         
     state["last_called_at"] = now
     
-    # 3. Advance queue
+    # 3. Re-check queue after awaits (another event may have drained it)
+    if not state["queue"]:
+        await sio.emit("queue_empty", {})
+        return "Queue is empty."
+    
+    # 4. Advance queue
     next_patient = state["queue"].pop(0)
     state["current_token"] = next_patient["token_id"]
     state["current_patient_name"] = next_patient["patient_name"]
@@ -223,7 +234,10 @@ async def process_sms_command(sender: str, message_body: str) -> str:
         return f"Token {token_id} added for {name}"
         
     elif cmd == "NEXT":
-        return await on_call_next()
+        if _call_next_lock.locked():
+            return "Another call is in progress. Try again."
+        async with _call_next_lock:
+            return await on_call_next()
         
     elif cmd == "SKIP":
         if len(words) < 2:
@@ -276,7 +290,8 @@ async def process_sms_command(sender: str, message_body: str) -> str:
         state["call_log"].clear()
         state["last_called_at"] = None
         state["avg_time_override"] = None
-        state["next_token_counter"] = 1
+        # Token counter keeps incrementing across resets to prevent ID collision
+        # with stale patient pages still open from the previous session
         await broadcast_queue_update()
         return "Queue reset. Ready for new session."
         
@@ -335,7 +350,10 @@ async def lite_add(request: Request, name: str = Form(...), phone: Optional[str]
 
 @app.post("/lite/next")
 async def lite_next(request: Request):
-    await on_call_next()
+    if _call_next_lock.locked():
+        return RedirectResponse(url="/lite/receptionist", status_code=303)
+    async with _call_next_lock:
+        await on_call_next()
     return RedirectResponse(url="/lite/receptionist", status_code=303)
 
 @app.get("/lite/patient", response_class=HTMLResponse)
@@ -453,6 +471,7 @@ async def handle_add_patient(sid, data):
         return
     name = data.get("name")
     phone = data.get("phone")
+    phone = phone.strip() if phone else None  # Normalize empty strings to None
     if not name:
         return
         
@@ -471,7 +490,10 @@ async def handle_add_patient(sid, data):
 
 @sio.on("call_next")
 async def handle_call_next(sid, data=None):
-    await on_call_next()
+    if _call_next_lock.locked():
+        return
+    async with _call_next_lock:
+        await on_call_next()
 
 @sio.on("skip_token")
 async def handle_skip_token(sid, data):
@@ -506,7 +528,7 @@ async def handle_reset_queue(sid, data=None):
     state["call_log"].clear()
     state["last_called_at"] = None
     state["avg_time_override"] = None
-    state["next_token_counter"] = 1
+    # Token counter keeps incrementing across resets to prevent ID collision
     await broadcast_queue_update()
 
 @sio.on("sync_request")
