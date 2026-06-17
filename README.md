@@ -145,3 +145,69 @@ Render's free tier spins down web services after 15 minutes of inactivity. To pr
   - `queue_update`: `{ current_token, current_patient_name, avg_consultation_mins, queue: [...] }`
   - `queue_empty`: `{}`
   - `patient_called`: `{ token_id, patient_name }`
+
+### 5.3 Sequence Event Diagram
+
+The following sequence diagram outlines all event transmissions, payloads, broadcasting behaviors, and the SMS webhook flows across T1, T2, and T3 tiers:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    
+    box T1 (React PWA)
+    actor ClientT1 as Receptionist / Patient (T1)
+    end
+    box T2 (Lite HTML)
+    actor ClientT2 as Receptionist (T2)
+    end
+    box T3 (SMS Tier)
+    actor PatientT3 as Patient (T3)
+    actor Gateway as Fast2SMS Gateway
+    end
+    box Server (FastAPI)
+    participant Server as Queue Cure Backend
+    end
+
+    %% T1 WebSocket Event Flows
+    Note over ClientT1, Server: T1 WebSocket Real-Time Flows
+    ClientT1->>Server: add_patient {name, phone (optional)} (WS)
+    Server-->>ClientT1: queue_update {current_token, queue: [...], avg_consultation_mins} (WS Broadcast)
+    
+    ClientT1->>Server: call_next (WS)
+    Note over Server: Acquire _call_next_lock
+    Server->>Gateway: POST BulkV2 (Send SMS alerts)
+    Gateway-->>PatientT3: SMS Alert: "your turn" / "you're next"
+    Server-->>ClientT1: queue_update (WS Broadcast)
+    Server-->>ClientT1: patient_called {token_id, patient_name} (WS Broadcast)
+    
+    ClientT1->>Server: skip_token {token_id} (WS)
+    Server-->>ClientT1: queue_update (WS Broadcast)
+    
+    ClientT1->>Server: set_avg_time {minutes} (WS)
+    Server-->>ClientT1: queue_update (WS Broadcast)
+    
+    ClientT1->>Server: reset_queue (WS)
+    Server-->>ClientT1: queue_update (WS Broadcast)
+    
+    ClientT1->>Server: sync_request (WS)
+    Server-->>ClientT1: queue_update (WS to Sender only)
+
+    %% T2 HTML Flow
+    Note over ClientT2, Server: T2 Lite HTML Route Flows
+    ClientT2->>Server: POST /lite/add {name, phone} (HTTP Form)
+    Server-->>ClientT1: queue_update (WS Broadcast)
+    Server-->>ClientT2: Redirect to /lite/receptionist (HTTP 303)
+    
+    ClientT2->>Server: POST /lite/next (HTTP Form)
+    Note over Server: Acquire _call_next_lock
+    Server->>Gateway: POST BulkV2 (Send SMS alerts)
+    Server-->>ClientT1: queue_update (WS Broadcast)
+    Server-->>ClientT2: Redirect to /lite/receptionist (HTTP 303)
+
+    %% T3 SMS Flow
+    Note over PatientT3, Server: T3 SMS Webhook Flow
+    PatientT3->>Server: POST /sms/receive {sender, message: "ADD Ramesh 9876..."} (HTTP Webhook)
+    Server-->>ClientT1: queue_update (WS Broadcast)
+    Server->>Gateway: POST BulkV2 (SMS Confirm)
+    Server-->>PatientT3: SMS Reply: "Token X added for Ramesh"
+```
