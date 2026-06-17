@@ -53,6 +53,15 @@ if os.path.exists(".env"):
 # Fast2SMS API Key from Environment
 FAST2SMS_API_KEY = os.getenv("FAST2SMS_API_KEY", "YOUR_FAST2SMS_API_KEY")
 
+def normalize_phone(phone: Optional[str]) -> Optional[str]:
+    if not phone:
+        return None
+    # Extract digits only
+    phone_clean = re.sub(r"\D", "", str(phone))
+    if len(phone_clean) >= 10:
+        return phone_clean[-10:]
+    return phone_clean if phone_clean else None
+
 # In-memory queue state
 state: Dict[str, Any] = {
     "queue": [],  # list of tokens: { token_id, patient_name, phone (optional), joined_at }
@@ -98,12 +107,9 @@ async def broadcast_queue_update():
     await sio.emit("queue_update", payload)
 
 async def send_sms(phone: str, message: str):
-    if not phone:
+    phone_clean = normalize_phone(phone)
+    if not phone_clean:
         return
-    # Clean phone number (extract digits only)
-    phone_clean = re.sub(r"\D", "", phone)
-    if len(phone_clean) > 10:
-        phone_clean = phone_clean[-10:]
         
     print(f"[SMS OUT] Sending to {phone_clean}: {message}")
     
@@ -207,8 +213,8 @@ async def process_sms_command(sender: str, message_body: str) -> str:
         content = match.group(1).strip()
         cmd_words = content.split()
         phone = None
-        if len(cmd_words) > 1 and re.match(r"^\d{10,12}$", cmd_words[-1]):
-            phone = cmd_words[-1]
+        if len(cmd_words) > 1 and re.match(r"^\+?\d{10,12}$", cmd_words[-1]):
+            phone = normalize_phone(cmd_words[-1])
             name = " ".join(cmd_words[:-1])
         else:
             name = content
@@ -264,6 +270,9 @@ async def process_sms_command(sender: str, message_body: str) -> str:
             minutes = float(words[1])
         except ValueError:
             return f"Invalid minutes value: {words[1]}"
+            
+        if minutes <= 0:
+            return "Invalid minutes value. Must be greater than 0."
             
         state["avg_time_override"] = minutes
         await broadcast_queue_update()
@@ -331,7 +340,7 @@ async def lite_add(request: Request, name: str = Form(...), phone: Optional[str]
         state["next_token_counter"] += 1
         joined_at = datetime.now().strftime("%I:%M %p")
         
-        phone_val = phone.strip() if phone else None
+        phone_val = normalize_phone(phone)
         
         new_patient = {
             "token_id": token_id,
@@ -471,7 +480,7 @@ async def handle_add_patient(sid, data):
         return
     name = data.get("name")
     phone = data.get("phone")
-    phone = phone.strip() if phone else None  # Normalize empty strings to None
+    phone = normalize_phone(phone)
     if not name:
         return
         
@@ -515,7 +524,7 @@ async def handle_set_avg_time(sid, data):
     elif isinstance(data, (int, float, str)):
         minutes = float(data)
         
-    if minutes is not None:
+    if minutes is not None and float(minutes) > 0:
         state["avg_time_override"] = float(minutes)
         await broadcast_queue_update()
 
